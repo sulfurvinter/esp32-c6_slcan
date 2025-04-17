@@ -138,7 +138,7 @@ int a2bhex(char *p, uint8_t s, uint8_t n, void *v)
 // transfer messages from CAN bus to host
 void xfer_can2tty()
 {
-  tCAN msg;
+  //tCAN msg;
   CanFrame rxframe2;
   char buf[CMD_LEN];
   int i;
@@ -186,8 +186,8 @@ void xfer_can2tty()
       {
         *p++ = 't';
       }
-      p += b2ahex(p, 3, 1, &msg.id);
-      len = msg.header.length;
+      p += b2ahex(p, 3, 1, &rxframe2.identifier);
+      len = rxframe2.data_length_code;
       p += b2ahex(p, 1, 1, &len);
     }
 
@@ -217,38 +217,63 @@ void slcan_nack()
 
 void send_canmsg(char *buf)
 {
-  tCAN msg;
+  //tCAN msg;
+	CanFrame TxFrame = { 0 };
   int len = strlen(buf) - 1;
   uint16_t id[2];
   uint8_t hlen;
   int is_eff = buf[0] & 0x20 ? 0 : 1;
   int is_rtr = buf[0] & 0x02 ? 1 : 0;
 
-  if (!is_eff && len >= 4) { // SFF
+  if (!is_eff && len >= 4) // SFF
+  {
     a2bhex(&buf[1], 3, 1, id);
-    msg.id = id[0];
-    msg.header.rtr = is_rtr;
-    msg.header.ide = 0;
+    TxFrame.identifier = id[0];   //msg.id = id[0];
+    TxFrame.rtr = is_rtr;          //msg.header.rtr = is_rtr;
+    TxFrame.extd = 0;             //msg.header.ide = 0;
     a2bhex(&buf[4], 1, 1, &hlen);
-    msg.header.length = hlen;
-    if (len - 4 - 1 == msg.header.length * 2) {
-      a2bhex(&buf[5], 2, msg.header.length, msg.data);
-      while (!ESP32Can.readFrame((CanFrame *)&msg, 1000)) ;
-    }
-
-  } else if (is_eff && len >= 9) { // EFF
-    a2bhex(&buf[1], 4, 2, id);
-    msg.id = id[0] & 0x1fff;
-    msg.ide = id[1];
-    msg.header.rtr = is_rtr;
-    msg.header.ide = 1;
-    a2bhex(&buf[9], 1, 1, &hlen);
-    msg.header.length = hlen;
-    if (len - 9 - 1 == msg.header.length * 2) {
-      a2bhex(&buf[10], 2, msg.header.length, msg.data);
-      while (!ESP32Can.readFrame((CanFrame *)&msg, 1000)) ;
+    TxFrame.data_length_code = hlen;     //msg.header.length = hlen;
+    if (len - 4 - 1 == TxFrame.data_length_code * 2)
+    {
+      a2bhex(&buf[5], 2, TxFrame.data_length_code, TxFrame.data);
+      ESP32Can.writeFrame(TxFrame,0);
+      Serial.print("z");
     }
   }
+  else if (is_eff && len >= 9) // EFF
+  {
+    a2bhex(&buf[1], 4, 2, id);
+    TxFrame.identifier = id[0];
+    TxFrame.identifier = TxFrame.identifier << 16;
+    TxFrame.identifier |= id[1];
+    TxFrame.rtr = is_rtr;
+    TxFrame.extd = 1;                        //msg.header.ide = 1;
+    a2bhex(&buf[9], 1, 1, &hlen);
+    TxFrame.data_length_code = hlen;         //msg.header.length = hlen;
+    if (len - 9 - 1 == TxFrame.data_length_code * 2)
+    {
+      a2bhex(&buf[10], 2, TxFrame.data_length_code, TxFrame.data);
+      ESP32Can.writeFrame(TxFrame,0);
+      Serial.print("Z");
+    }
+  }
+
+
+/*
+	TxFrame.identifier = 0x7DF; // Default OBD2 address;
+	TxFrame.extd = 0;
+	TxFrame.data_length_code = 8;
+	TxFrame.data[0] = 2;
+	TxFrame.data[1] = 1;
+	TxFrame.data[2] = obdId;
+	TxFrame.data[3] = 0xAA;    // Best to use 0xAA (0b10101010) instead of 0
+	TxFrame.data[4] = 0xAA;    // CAN works better this way as it needs
+	TxFrame.data[5] = 0xAA;    // to avoid bit-stuffing
+	TxFrame.data[6] = 0xAA;
+	TxFrame.data[7] = 0xAA;
+    // Accepts both pointers and references 
+    ESP32Can.writeFrame(TxFrame,0);  // timeout defaults to 1 ms
+*/
 }
 
 void pars_slcancmd(char *buf)
@@ -256,12 +281,15 @@ void pars_slcancmd(char *buf)
   switch (buf[0]) {
     // common commands
     case 'O': // open channel
-//      digitalWrite(LED_OPEN, HIGH);
-      if (ESP32Can.begin())
+      if(ESP32Can.begin())
       {
-//        digitalWrite(LED_ERR, LOW);
-      } else {
-//        digitalWrite(LED_ERR, HIGH);
+        pixels.setPixelColor(0, pixels.Color(0, 150, 0)); //green = ok
+        pixels.show();   // Send the updated pixel colors to the hardware.
+      }
+      else
+      {
+        pixels.setPixelColor(0, pixels.Color(150, 0, 0)); //red = error
+        pixels.show();   // Send the updated pixel colors to the hardware.
       }
       slcan_ack();
       break;
@@ -296,7 +324,8 @@ void pars_slcancmd(char *buf)
 
     // non-standard commands
     case 'S': // setup CAN bit-rates
-      switch (buf[1]) {
+      switch (buf[1])
+      {
         case '0': // 10k
         case '1': // 20k
         case '2': // 50k
@@ -304,25 +333,32 @@ void pars_slcancmd(char *buf)
           break;
         case '3': // 100k
           g_can_speed = 100;
+          ESP32Can.setSpeed(ESP32Can.convertSpeed(100));
           slcan_ack();
           break;
         case '4': // 125k
           g_can_speed = 125;
+          ESP32Can.setSpeed(ESP32Can.convertSpeed(125));
           slcan_ack();
           break;
         case '5': // 250k
           g_can_speed = 250;
+          ESP32Can.setSpeed(ESP32Can.convertSpeed(250));
           slcan_ack();
           break;
         case '6': // 500k
           g_can_speed = 500;
+          ESP32Can.setSpeed(ESP32Can.convertSpeed(500));
           slcan_ack();
           break;
         case '7': // 800k
-          slcan_nack();
+          g_can_speed = 800;
+          ESP32Can.setSpeed(ESP32Can.convertSpeed(800));
+          slcan_ack();
           break;
         case '8': // 1000k
           g_can_speed = 1000;
+          ESP32Can.setSpeed(ESP32Can.convertSpeed(1000));
           slcan_ack();
           break;
         default:
@@ -394,7 +430,7 @@ void sendObdFrame(uint8_t obdId)
 	obdFrame.data[6] = 0xAA;
 	obdFrame.data[7] = 0xAA;
     // Accepts both pointers and references 
-    ESP32Can.writeFrame(obdFrame);  // timeout defaults to 1 ms
+    ESP32Can.writeFrame(obdFrame,0);  // timeout defaults to 1 ms
 }
 
 void setup()
